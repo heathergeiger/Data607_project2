@@ -1,0 +1,275 @@
+# MTA Subway Station Ridership Info - Analyzing the Tidied Data
+## Data 607 - Project 2
+### Heather Geiger; March 11, 2018
+
+## About this data
+
+This data set was provided by Jeremy O'Brien from my Data 607 class in the CUNY Master's of Data Science program.
+
+Here is some information he provided about this data. All statements here are quotes from him.
+
+In addition to being the largest in the world (by stations) and busiest (by annual ridership) in the western hemisphere, NYC’s subway system is one of the oldest.  If you’re interested in what that means, you might enjoy this article:  https://www.theatlantic.com/technology/archive/2015/11/why-dont-we-know-where-all-the-trains-are/415152/
+
+The Metropolitan Transit Authority (MTA) runs NYC’s bus, subway, and commuter rail systems, for which it makes a lot of transportation data publicly available through APIs (http://datamine.mta.info/) and Open Data initaitives (https://opendata.cityofnewyork.us/). 
+
+The subway system moved to a MetroCard (MC) fare system in 1993, and as of 2016 almost all fares are paid at turnstiles by swiping a MetroCard (with the exception of savvy turnstile jumpers: http://freakonomics.com/2011/07/27/in-new-york-city-it-still-pays-to-hop-the-subway-turnstile/).  As fares do not vary within the subway system (they do for inter-borough buses and commuter rail), subway riders swipe in but do not swipe out.  This is different from many other cities subway systems, which have variable fares to account for zones, travel distances, etc. and leverage cashless payment systems like Oystercard or QR codes.
+
+I nabbed a CSV of MC swipes by station, which you will find here:  https://raw.githubusercontent.com/JeremyOBrien16/NYC-MTA-Weekly-MetroCard-Swipes/master/Fare_Card_History_for_Metropolitan_Transportation_Authority__MTA___Beginning_2010.csv.
+
+It is a wide dataset.  Columns include record date start and finish (all 7 days periods , subway station names, and multiple columns of counts of different swipes by fare class (commuter cards, senior citizen cards, multi-modal tickets, etc.).  Tuples constitute a vector of swipes by fare class for a station during a a given weeklong date range.  Stations are points of origin, and per the above note on single-swipe / non-variable fares above, rider destinations are not known.
+
+We can rank stations by annual traffic.  If we cross-reference with a lookup table of stations by borough (would need to be sourced), we can analyze volume and consequently ridership demand by borough.  If we cross-reference with a lookup table of stations by subway line (would also need to be sourced), we can analyze load factors for those lines, and rank them for most throughput.
+
+We can use the longitudinality of the dataset to look at seasonal traffic patterns and peak load - as a whole, for sets of stations bucketed by average volume levels, and for specific stations.
+
+We can look at demand for accessible services (intuited through senior citizen and disabled fares) and how that changes over time.
+
+We can look at airtran swipes (a direct tram connection from the subway system to JFK airport) to understand the stations where a proportion of airport-bound traffic is originating.
+
+## Tidying the data
+
+This document is a follow-up to this one: http://rpubs.com/hmgeiger/368699
+
+In the first document, I tidy the data including downloading the raw data, converting from wide to long format, etc.
+
+This document assumes that you have already run the tidying steps, and have the Rdata file containing the tidied data set ready to go.
+
+If this is not the case, you may download an R object with the tidied data here:
+
+https://github.com/heathergeiger/Data607_project2
+
+## Plan for analysis
+
+As I was not able to source any complementary data, I will focus my analysis on what I can determine based solely on this data set alone.
+
+One simple first step might be to make a barplot of the average weekly ridership for the least and most frequented stations.
+
+A histogram of the average weekly ridership across stations would also be useful, to show the distribution of how the busy-ness of stations is distributed across all stations.
+
+I'm not sure about seasonal patterns, but looking at ridership in general across time (say year-by-year) might be interesting.
+
+After this, I think the suggestion to look at different fare types is a good one. Another person in the class also suggested looking at the ratio of unlimited to regular (full-fare) Metrocard swipes.
+
+I will focus my analysis using this suggestion specifically.
+
+## Getting started
+
+Load libraries and R object.
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(lubridate)
+
+load("mta_by_station_tidied.Rdata")
+```
+
+## Most and least frequented stations
+
+To start very simply, let's get the mean weekly ridership per station across the entire time frame of this data set.
+
+We'll take weekly ridership as the sum of all fare types for now.
+
+Run mean with na.rm=TRUE so we only calculate based on weeks when the station was open.
+
+```{r}
+total_weekly_ridership <- mta %>% group_by(From.Date,Remote.Station.ID,Station) %>% summarize(Total.ridership = sum(Num.fares))
+total_weekly_ridership <- data.frame(total_weekly_ridership,stringsAsFactors=FALSE)
+
+mean_weekly_ridership <- aggregate(Total.ridership ~ Station,data=total_weekly_ridership,FUN=function(x)mean(x,na.rm=TRUE))
+mean_weekly_ridership <- data.frame(mean_weekly_ridership,stringsAsFactors=FALSE)
+
+colnames(mean_weekly_ridership)[2] <- "Mean.weekly.ridership"
+
+least_used_stations <- mean_weekly_ridership %>% top_n(-20,Mean.weekly.ridership) %>% arrange(Mean.weekly.ridership)
+least_used_stations$Station <- factor(as.vector(least_used_stations$Station),levels=as.vector(least_used_stations$Station))
+
+most_used_stations <- mean_weekly_ridership %>% top_n(20,Mean.weekly.ridership) %>% arrange(Mean.weekly.ridership)
+most_used_stations$Station <- factor(as.vector(most_used_stations$Station),levels=as.vector(most_used_stations$Station))
+
+most_and_least_used_stations <- rbind(data.frame(least_used_stations,Status = "Least used"),data.frame(most_used_stations,Status = "Most used"))
+
+ggplot(most_and_least_used_stations,aes(Station,Mean.weekly.ridership)) + geom_bar(stat="identity") + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + facet_wrap(~Status,scales="free")
+```
+
+The mean weekly ridership at the least used stations is orders of magnitude lower than for the most used stations.
+
+## Distribution of ridership by station
+
+What is the distribution of mean weekly ridership across stations?
+
+```{r}
+hist(mean_weekly_ridership$Mean.weekly.ridership,
+xlab="Mean weekly ridership",
+ylab="Number of stations",
+main="")
+
+hist(mean_weekly_ridership$Mean.weekly.ridership[mean_weekly_ridership$Mean.weekly.ridership < 2e5],
+xlab="Mean weekly ridership",
+ylab="Number of stations",
+breaks=seq(from=0,to=2e5,by=10000),
+main="Only stations with mean weekly ridership < 200,000 shown")
+```
+
+The mean weekly ridership across stations is strongly right-skewed.
+
+Most stations have less than 50,000 weekly riders on average.
+
+## Changes in ridership over time
+
+Let's get the total ridership per station separated by year.
+
+```{r}
+total_ridership_by_year <- mta %>% group_by(year(From.Date),Remote.Station.ID,Station) %>% summarize(Total.ridership = sum(Num.fares))
+total_ridership_by_year <- data.frame(total_ridership_by_year,check.names=FALSE,stringsAsFactors=FALSE)
+colnames(total_ridership_by_year)[1] <- "Year"
+```
+
+What is the distribution of total ridership per station-year?
+
+```{r}
+hist(total_ridership_by_year$Total.ridership,
+xlab="Total yearly ridership",
+ylab="Number of station-years",
+main="")
+```
+
+Now, plot the distribution of total ridership per station separated by year.
+
+```{r}
+i = 0
+
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+for(year in 2011:2017)
+{
+i = i + 1
+if(i == 1){
+	plot(density(total_ridership_by_year$Total.ridership[total_ridership_by_year$Year == year & total_ridership_by_year$Total.ridership < 5e6],na.rm=TRUE),
+	col=cbPalette[i],
+	xlab="Total ridership per station for each year",
+	ylab="Density of stations",
+	main="Compare distribution of total ridership per station\nacross stations by year",
+	ylim=c(0,4e-7),
+	xlim=c(0,5e6))
+}
+if(i > 1){
+	lines(density(total_ridership_by_year$Total.ridership[total_ridership_by_year$Year == year & total_ridership_by_year$Total.ridership < 5e6],na.rm=TRUE),
+	col=cbPalette[i])
+	}
+}
+
+legend("topright",
+legend=2011:2017,
+col=cbPalette,
+lwd=3,
+bty="n")
+```
+
+The lower density at lower total ridership numbers show that the distribution has more stations with higher total ridership in those years.
+
+Therefore we find that total ridership per station has generally increased over time, as there is more density at lower total ridership numbers in 2011 than 2016/2017.
+
+We also see a change over time, as total ridership per station gradually increases each year going from 2011 to 2016/2017.
+
+## Fare types by station - unlimited vs. full fare
+
+First, let's subset the data to just full fare or unlimited.
+
+Then, spread the data to be slightly wider.
+
+Also convert to proportions.
+
+```{r}
+mta_full_fare_or_unlimited <- mta[mta$Fare.Type %in% c("Full.Fare","7.Day.Unlimited","30.Day.Unlimited"),]
+
+mta_full_fare_or_unlimited <- spread(mta_full_fare_or_unlimited,Fare.Type,Num.fares)
+
+total_full_fare_and_unlimited_per_date_and_station <- rowSums(mta_full_fare_or_unlimited[,4:6])
+
+for(i in 4:6)
+{
+mta_full_fare_or_unlimited[,i] <- mta_full_fare_or_unlimited[,i]/total_full_fare_and_unlimited_per_date_and_station
+}
+```
+
+Get the mean proportion of full fares over full + unlimited per station across dates.
+
+```{r}
+mean_full_fare_per_station <- aggregate(Full.Fare ~ Station,data=mta_full_fare_or_unlimited,FUN=function(x)mean(x,na.rm=TRUE))
+```
+
+Make a histogram of the proportion of full fares versus full + unlimited fares per station.
+
+```{r}
+hist(mean_full_fare_per_station$Full.Fare,
+xlab="Mean proportion of full fares over full + unlimited fares",
+ylab="Number of stations",
+main="",
+labels=TRUE)
+```
+
+One station averages less than 30% of full or unlimited rides coming from full fares.
+
+Another two have more than 90% from full fares.
+
+Let's check what these are.
+
+```{r}
+mean_full_fare_per_station[mean_full_fare_per_station$Full.Fare < 0.3 | mean_full_fare_per_station$Full.Fare > 0.9,]
+```
+
+I think the AirTrain may not accept unlimited Metrocards, so it makes sense that the proportions are so low there.
+
+As for MCDONALD AVE-22ND AVE, maybe it is not so unusual? Let's replot histogram after remove the two AirTrain stops.
+
+```{r}
+hist(mean_full_fare_per_station$Full.Fare[mean_full_fare_per_station$Full.Fare < 0.9],
+xlab="Mean proportion of full fares over full + unlimited fares",
+ylab="Number of stations",
+main="",
+labels=TRUE)
+```
+
+Definitely still unusual.
+
+Let's check this station again.
+
+```{r}
+mcdonald_avenue <- mta[mta$Station == "MCDONALD AVE-22ND AVE" & mta$Fare.Type %in% c("Full.Fare","7.Day.Unlimited","30.Day.Unlimited"),]
+mcdonald_avenue <- mcdonald_avenue[!is.na(mcdonald_avenue$Num.fares),]
+mcdonald_avenue <- data.frame(Week = paste0("Week",rep(1:402,times=3)),
+	mcdonald_avenue[,4:5],
+	stringsAsFactors=FALSE)
+ggplot(mcdonald_avenue,aes(Week,Num.fares,fill=Fare.Type)) + geom_bar(stat="identity") + ggtitle("MCDONALD AVE-22ND AVE")
+```
+
+Numbers of weekly fares at this station are extremely low. 
+
+What about the other stations at the extremes of this distribution?
+
+```{r}
+low_proportion_full_fares <- mean_full_fare_per_station$Station[mean_full_fare_per_station$Full.Fare < 0.35 & mean_full_fare_per_station$Full.Fare > 0.3]
+high_proportion_full_fares <- mean_full_fare_per_station$Station[mean_full_fare_per_station$Full.Fare > 0.65 & mean_full_fare_per_station$Full.Fare < 0.9]
+
+low_proportion_full_fares
+high_proportion_full_fares
+```
+
+We find that 145TH STREET-BROADWAY, ALABAMA AVENUE-FULTON ST, AVENUE U-WEST 7TH STREET, and RI TRAMWAY (MANHATTAN) have an unusually low proportion of full vs. unlimited fares.
+
+34TH STREET - PENN STATION, BROAD CHANNEL-NOEL ROAD, NORTH CONDUIT AVE-COHANCEY, ST GEORGE TERMINAL, and TOMPKINSVILLE have a high proportion of full fares.
+
+Penn Station gets a lot of visitors, who are presumably less likely than regular NYC residents and commuters to buy unlimited Metrocards. 
+
+St. George Terminal and Tompkinsville are both in Station Island. Staten Island commuters frequently use non-train modes of transportation to commute (like express buses), so maybe these commuters feel less inclined to buy unlimited Metrocards if they are not taking the train every day.
+
+One hypothesis for the stations with fewer full fares is that these stations contain higher proportions of regular commuters, for whom it may make more sense to buy an unlimited Metrocard than those who ride the subway (or tram) less often.
+
+145TH STREET-BROADWAY is in Upper Manhattan, while RI TRAMWAY (MANHATTAN) is for the Roosevelt Island tram. ALABAMA AVENUE-FULTON ST and AVENUE U-WEST 7TH STREET are both deep into Brooklyn.
+
+None of these areas are served by alternative means of public transportation like express buses, and all are primarily residential areas.
+
+This hypothesis also makes sense for MCDONALD AVE-22ND AVE, which is also deep into Brooklyn and not in an express bus neighborhood.
