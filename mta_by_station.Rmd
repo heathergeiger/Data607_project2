@@ -1,0 +1,461 @@
+# MTA Subway Station Ridership Info - Tidying the Data
+## Data 607 - Project 2
+### Heather Geiger; March 11, 2018
+
+Load libraries.
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(stringr)
+```
+
+Read in data.
+
+Downloading the file is commented out here because we already ran it, but should un-comment if running this for the first time.
+
+```{r read-in-csv,echo=TRUE,eval=TRUE,cache=TRUE}
+#download.file("https://raw.githubusercontent.com/JeremyOBrien16/NYC-MTA-Weekly-MetroCard-Swipes/master/Fare_Card_History_for_Metropolitan_Transportation_Authority__MTA___Beginning_2010.csv",destfile="mta_by_station.csv")
+mta <- read.csv("mta_by_station.csv",header=TRUE,check.names=FALSE,stringsAsFactors=FALSE)
+```
+
+Check how many rows and columns.
+
+```{r}
+dim(mta)
+```
+
+Look at first few lines.
+
+```{r,echo=TRUE,eval=FALSE}
+head(mta,n=3)
+```
+
+```{r, echo=FALSE,eval=TRUE}
+options(width=125)
+head(mta[,1:6],n=3)
+head(mta[,7:8],n=3)
+col9 <- data.frame(Column9 = mta[,9],stringsAsFactors=FALSE)
+colnames(col9) <- colnames(mta)[9]
+head(col9,n=3)
+head(mta[,10:14],n=3)
+head(mta[,15:18],n=3)
+head(mta[,19:21],n=3)
+head(mta[,22:ncol(mta)],n=3)
+options(width=80)
+```
+
+From some initial exploration already run (not shown here), we already know some cleaning and transformations we need to do.
+
+Sometimes the same station will occur twice, with and without trailing whitespace.
+
+Let’s run the station names through the trimws function to fix this. Then, filter out duplicate lines.
+
+Also use the toupper function to make sure all station names are all caps (it seems they are, but just to be safe).
+
+```{r rmdup1,cache=TRUE}
+mta$Station <- toupper(trimws(mta$Station))
+
+mta <- mta[!duplicated(mta),]
+```
+
+There was a simple error where Prospect Ave was listed as either "PROSPECT AVE-4TH AVE" or "PROSPECT AVENUE-4TH AVENUE". Fix this.
+
+Also, Fulton Street was listed under two names before the renovation. Fix this as well.
+
+```{r error-mapvalues-fix, cache=TRUE}
+mta$Station <- plyr::mapvalues(mta$Station,
+        from = c("PROSPECT AVE-4TH AVE", "FULTON ST & BROADWAY NASSAU"),
+        to = c("PROSPECT AVENUE-4TH AVENUE","FULTON STREET"))
+```
+
+Several stations had the same remote station ID, but two different station names. Fix this.
+
+```{r}
+station_names_to_consolidate <- c("FULTON STREET","BROADWAY NASSAU STREET","BARCLAYS CENTER","ATLANTIC AVENUE","ROCKAWAY AVENUE","ROCKWAY AVENUE","241ST ST-WHITE PLAINS RD","241TH ST-WHITE PLAINS RD","NEWKIRK PLAZA","NEWKIRK AVE-EAST 16TH ST","COURT SQ","45TH ROAD-COURT HOUSE SQ","COURT SQ-23 ST","23RD STREET-ELY AVENUE","KOSCIUSZKO STREET-BROADWAY","KOSCIUSKO STREET-BROADWAY","GRANT AVENUE-PITKIN AVENUE","GRANT AVNUE-PITKIN AVENUE","SHEPHERD AVE-PITKIN AVE","SHEPERD AVE-PITKIN AVE")
+
+mta$Station <- plyr::mapvalues(mta$Station,
+        from = station_names_to_consolidate,
+        to = rep(station_names_to_consolidate[seq(from=1,to=19,by=2)],each=2))
+```
+
+Next, take only the first occurence for each combination of start date, remote station ID, and station name.
+
+We found through previous exploration that on one start date (December 25, 2010),  we would often see the same station repeated, with very similar but not exactly the same values per column.
+
+However, the values were close enough that just taking the first occurence should be fine.
+
+```{r rmdup2, cache=TRUE}
+date_plus_id_and_name_of_stations_for_dedup <- paste0(mta[,"From Date"],"-",
+	mta[,"Remote Station ID"],"-",
+	mta[,"Station"])
+
+mta <- mta[!duplicated(date_plus_id_and_name_of_stations_for_dedup),]
+```
+
+Some lines had binary values instead of actual numbers for the various columns.
+
+Remove these by requiring that "Full Fare" be > 1.
+
+```{r rmbinary, cache=TRUE}
+mta <- mta[mta[,"Full Fare"] > 1,]
+```
+
+Remove column "To Date" and change all spaces and slashes in column names with "." and "or" to make easier to work with.
+
+```{r}
+colnames(mta) <- str_replace_all(colnames(mta),pattern="/",replace="or")
+colnames(mta) <- str_replace_all(colnames(mta),pattern=" ",replace=".")
+mta <- mta[,setdiff(colnames(mta),"To.Date")]
+colnames(mta)
+```
+
+Convert dates to date format. Next order by date, then station.
+
+```{r}
+mta$From.Date <- as.Date(mta$From.Date,format="%m/%d/%Y")
+mta <- mta[order(mta$From.Date,mta$Station),]
+```
+
+Several stations had more than one remote station ID for the same station name. Let's look at this in more detail.
+
+```{r}
+dates_plus_stations <- mta[,c("From.Date","Station")]
+
+repeated_station_names <- unique(dates_plus_stations$Station[duplicated(dates_plus_stations)])
+
+dates_plus_stations_repeated_stations <- mta[mta$Station %in% repeated_station_names,
+	c("From.Date","Remote.Station.ID","Station")]
+
+repeated_stations_ids_pasted_to_names <- paste0(dates_plus_stations_repeated_stations$Remote.Station.ID,"-",
+	dates_plus_stations_repeated_stations$Station)
+
+freq_per_repeated_station <- data.frame(table(repeated_stations_ids_pasted_to_names),stringsAsFactors=FALSE)
+freq_per_repeated_station$Var1 <- as.vector(freq_per_repeated_station$Var1)
+
+length(unique(dates_plus_stations$From.Date))
+
+table(freq_per_repeated_station$Freq)
+
+freq_per_repeated_station[freq_per_repeated_station$Freq != length(unique(dates_plus_stations$From.Date)),]
+```
+
+Most stations except for a few, have all dates for each remote station ID in cases where the station name is repeated.
+
+I already know from previous exploration that for Fulton Street, there is one remote station ID that was only there in earlier part of data, vs. one that was there the whole time.
+
+We can just sum for cases where there are both remote station IDs.
+
+What about Prospect Avenue?
+
+```{r}
+dates_in_R246 <- dates_plus_stations_repeated_stations$From.Date[dates_plus_stations_repeated_stations$Remote.Station.ID == "R246"]
+dates_in_R454 <- dates_plus_stations_repeated_stations$From.Date[dates_plus_stations_repeated_stations$Remote.Station.ID == "R454"]
+as.Date(setdiff(dates_in_R246,dates_in_R454),origin = "1970-01-01")
+```
+
+A quick Google search reveals that the Prospect Avenue station was closed for maintenance from early June to early November 2017 (https://en.wikipedia.org/wiki/Prospect_Avenue_(BMT_Fourth_Avenue_Line).
+
+Based on this, the dates we are seeing for one remote station ID but not the other probably make sense.
+
+Anyway, let's now sum all numeric columns by date + station for these stations.
+
+```{r}
+repeated_station_name_indices <- mta$Station %in% repeated_station_names
+repeated_stations_full_info <- mta[repeated_station_name_indices,]
+
+recurrent_stations_sum_by_date_and_station <- repeated_stations_full_info[,setdiff(colnames(mta),"Remote.Station.ID")]  %>% 
+	group_by(From.Date,Station) %>% 
+	summarize_all(funs(sum))
+
+recurrent_stations_sum_by_date_and_station <- data.frame(recurrent_stations_sum_by_date_and_station,check.names=FALSE,stringsAsFactors=FALSE)
+```
+
+Get collapsed remote station IDs as well, and merge this information with recurrent_stations_sum_by_date_and_station.
+
+```{r}
+repeated_stations_ids_plus_names <- repeated_stations_full_info[,c("Remote.Station.ID","Station")]
+repeated_stations_ids_plus_names <- repeated_stations_ids_plus_names[!duplicated(repeated_stations_ids_plus_names),]
+
+repeated_stations_ids_plus_names <- repeated_stations_ids_plus_names %>% group_by(Station) %>% summarize(Remote.Station.ID = paste0(Remote.Station.ID,collapse="/"))
+repeated_stations_ids_plus_names <- data.frame(repeated_stations_ids_plus_names,stringsAsFactors=FALSE)
+
+repeated_stations_aggregated <- merge(repeated_stations_ids_plus_names,
+	recurrent_stations_sum_by_date_and_station,
+	by="Station")
+```
+
+Remove the repeated stations from mta, then merge mta with repeated_stations_aggregated.
+
+```{r}
+mta <- mta[!repeated_station_name_indices,]
+
+repeated_stations_aggregated <- repeated_stations_aggregated[,colnames(mta)]
+
+mta <- rbind(mta,repeated_stations_aggregated)
+
+mta <- mta[order(mta$From.Date,mta$Station),]
+```
+
+Now, there were some stations that we want to exclude, as they are not actual MTA subway stations.
+
+```{r}
+possible_stations <- unique(mta$Station)
+stations_to_exclude <- grep('^PA-PATH',possible_stations,value=TRUE) #PATH stations are not a part of the subway system and should be excluded.
+stations_to_exclude <- c(stations_to_exclude,
+	c("METROCARD VAN 1",
+	"MTABC - EASTCHESTER 2",
+	"HEMPSTEAD-LIB CUST SERVICE",
+	"LGA AIRPORT CTB",
+	"ORCHARD BEACH")) #Removing some specific names that I realize are not actual subway stations (eg Orchard Beach actually refers to a bus service).
+
+stations_to_exclude
+
+stations_to_exclude_indices <- mta$Station %in% stations_to_exclude
+
+mta <- mta[!stations_to_exclude_indices,]
+```
+
+Finally, let's explore if there are any dates missing for all stations.
+
+Then, see which stations have some missing dates, and if so which dates they are missing.
+
+```{r}
+possible_dates <- unique(mta$From.Date)
+
+possible_dates[1]
+possible_dates[length(possible_dates)]
+
+all_weeks_in_range_of_possible_dates <- seq.Date(as.Date(possible_dates[1]),as.Date(possible_dates[length(possible_dates)]),by="7 days")
+
+as.Date(setdiff(all_weeks_in_range_of_possible_dates,possible_dates),origin="1970-01-01")
+```
+
+There are definitely some dates that are missing for all stations. We will want to impute for these.
+
+Now, check dates per station.
+
+```{r}
+num_dates_per_station <- data.frame(table(mta$Station),stringsAsFactors=FALSE)
+num_dates_per_station$Var1 <- as.vector(num_dates_per_station$Var1)
+
+num_dates_per_station <- num_dates_per_station[num_dates_per_station$Freq < length(possible_dates),]
+num_dates_per_station <- num_dates_per_station[order(num_dates_per_station$Freq),]
+
+#Let's display only stations that have at least 4 weeks less than other stations.
+
+num_dates_per_station[num_dates_per_station$Freq < (length(possible_dates) - 4),]
+```
+
+The three stations with the fewest results are the 2nd Avenue subway, which has not been open very long.
+
+Hudson Yards is also definitely a new station.
+
+Let's check AQUEDUCT RACE TRACK and SMITH STREET-9TH STREET manually.
+
+After this, we start getting into the range of dates missed that is most likely just due to temporary station closures.
+
+```{r}
+aqueduct_dates_not_found <- as.Date(setdiff(possible_dates,mta$From.Date[which(mta$Station == "AQUEDUCT RACE TRACK")]),origin="1970-01-01")
+aqueduct_dates_not_found[1]
+aqueduct_dates_not_found[length(aqueduct_dates_not_found)]
+
+as.Date(setdiff(possible_dates[which(possible_dates >= min(aqueduct_dates_not_found) & possible_dates <= max(aqueduct_dates_not_found))],aqueduct_dates_not_found),origin="1970-01-01")
+```
+
+Looks like closures were mostly during a contiguous period, excepting from late 2010-early 2011, one week in 2012, and two weeks in 2013 near when it eventually opened for good again.
+
+This matches pretty well with the history of the station (https://en.wikipedia.org/wiki/Aqueduct_Racetrack_(IND_Rockaway_Line)).
+
+```{r}
+smith_9th_dates_not_found <- as.Date(setdiff(possible_dates,mta$From.Date[which(mta$Station == "SMITH STREET-9TH STREET")]),origin="1970-01-01")
+smith_9th_dates_not_found[1]
+smith_9th_dates_not_found[length(smith_9th_dates_not_found)]
+
+length(smith_9th_dates_not_found)
+length(possible_dates[which(possible_dates >= min(smith_9th_dates_not_found) & possible_dates <= max(smith_9th_dates_not_found))])
+```
+
+Closures at Smith-9th occur completely within a contiguous period, which matches perfectly with the time it was under construction (https://en.wikipedia.org/wiki/Smith–Ninth_Streets_(IND_Culver_Line)).
+
+Now just need to impute missing dates.
+
+First, let's put NAs for all numeric columns in cases where a station was closed on a certain date or set of dates.
+
+```{r}
+i = 0
+
+rows_to_add_to_mta <- c()
+
+for(station in num_dates_per_station$Var1)
+{
+i = i + 1
+
+dates_not_found_this_station <- as.Date(setdiff(possible_dates,
+	mta$From.Date[which(mta$Station == station)]),
+	origin="1970-01-01")
+
+remote_station_id <- as.vector(mta$Remote.Station.ID)[which(mta$Station == station)[1]]
+
+dates_not_found_this_station_dat <- data.frame(From.Date = dates_not_found_this_station,
+	Remote.Station.ID = remote_station_id,
+	Station = station,
+	stringsAsFactors=FALSE)
+
+dates_not_found_this_station_dat <- cbind(dates_not_found_this_station_dat,
+	data.frame(matrix(NA,ncol=(ncol(mta) - 3),nrow=nrow(dates_not_found_this_station_dat)),
+	stringsAsFactors=FALSE))
+
+if(i == 1){rows_to_add_to_mta <- dates_not_found_this_station_dat}
+
+if(i > 1){rows_to_add_to_mta <- rbind(rows_to_add_to_mta,
+	dates_not_found_this_station_dat)}
+}
+
+colnames(rows_to_add_to_mta) <- colnames(mta)
+```
+
+Check our work.
+
+```{r}
+sum(length(possible_dates) - num_dates_per_station$Freq)
+dim(rows_to_add_to_mta)
+
+head(rows_to_add_to_mta[,1:5])
+tail(rows_to_add_to_mta[,1:5])
+
+mta <- rbind(mta,rows_to_add_to_mta)
+mta <- mta[order(mta$From.Date,mta$Station),]
+```
+
+Then for the missing dates, impute based on the nearest non-missing date.
+
+Let's look and see exactly which dates are missing again.
+
+```{r}
+dates_missing_for_all <- as.Date(setdiff(all_weeks_in_range_of_possible_dates,possible_dates),origin="1970-01-01")
+
+dates_missing_for_all
+```
+
+There are three pairs of concurrent missing dates.
+
+Let's impute based on the two nearest dates. 
+
+Unless concurrent, in which cases take nearest valid date (either before or after).
+
+```{r}
+i = 0
+
+for(date in dates_missing_for_all)
+{
+i = i + 1
+
+date_before <- as.Date(date - 7,origin="1970-01-01")
+date_after <- as.Date(date + 7,origin="1970-01-01")
+
+dates_before_and_after <- as.Date(intersect(c(date_before,date_after),
+	possible_dates),
+	origin="1970-01-01")
+
+mta_on_dates_before_and_after <- mta[mta$From.Date %in% dates_before_and_after,]
+
+mta_on_dates_before_and_after <- mta_on_dates_before_and_after[,2:ncol(mta_on_dates_before_and_after)] %>% 
+	group_by(Remote.Station.ID,Station) %>% 
+	summarize_all(funs(mean))
+
+mta_on_dates_before_and_after <- data.frame(mta_on_dates_before_and_after,check.names=FALSE,stringsAsFactors=FALSE)
+
+mta_on_dates_before_and_after <- data.frame(From.Date = as.Date(date,origin="1970-01-01"),
+	mta_on_dates_before_and_after,
+	check.names=FALSE,stringsAsFactors=FALSE)
+
+if(i == 1){imputed_data <- mta_on_dates_before_and_after}
+
+if(i > 1){imputed_data <- rbind(imputed_data,
+	mta_on_dates_before_and_after)}
+}
+```
+
+Check our work.
+
+```{r}
+dim(imputed_data)
+length(unique(imputed_data$Station))
+length(unique(imputed_data$Station)) * length(unique(imputed_data$From.Date))
+length(unique(mta$Station))
+
+head(imputed_data[,1:5])
+tail(imputed_data[,1:5])
+```
+
+Just need to round to nearest integer for numeric fields. Then, let's combine with other data.
+
+```{r}
+imputed_data[,4:ncol(mta)] <- round(imputed_data[,4:ncol(mta)])
+
+head(imputed_data[,1:7])
+
+mta <- rbind(mta,imputed_data)
+
+mta <- mta[order(mta$From.Date,mta$Station),]
+
+nrow(mta)
+
+length(unique(mta$Station))
+
+length(unique(mta$From.Date)) * length(unique(mta$Station))
+length(unique(mta$From.Date))
+length(all_weeks_in_range_of_possible_dates)
+```
+
+Everything looks good!
+
+Let's pick a station and plot so we make sure imputed data looks OK.
+
+```{r}
+num_non_NA_per_station <- table(mta[which(is.na(mta$Full.Fare) == FALSE),"Station"])
+num_non_NA_per_station <- data.frame(num_non_NA_per_station)
+num_non_NA_per_station$Var1 <- as.vector(num_non_NA_per_station$Var1)
+
+test_station <- num_non_NA_per_station$Var1[num_non_NA_per_station$Freq == length(all_weeks_in_range_of_possible_dates)]
+test_station <- mta[mta$Station == test_station[1],]
+
+plot(1:nrow(test_station),
+test_station$Full.Fare,
+type="l",
+xlab="Week",ylab="Number of full fares",
+main=test_station$Station[1])
+
+test_station$From.Date[which(test_station$Full.Fare < 5000)]
+test_station$From.Date[which(test_station$Full.Fare > 15000)]
+```
+
+One of the very low dates was for Hurricane Sandy, and another is in winter so may have been a winter weather event of some kind.
+
+The high events are all around a similar time. Not sure why this is, but don't think this shows any imputation errors.
+
+Now, as the final step, let's convert from wide to long format.
+
+```{r gather,cache=TRUE}
+nrow(mta) * (ncol(mta) - 3)
+
+mta <- gather(mta,Fare.Type,Num.fares,-From.Date,-Remote.Station.ID,-Station)
+
+nrow(mta)
+
+head(mta)
+tail(mta)
+```
+
+Looks great!
+
+Now we are in a good place to do whatever kind of analysis we would like.
+
+However, I think we've done enough for now. 
+
+I am going to save mta as an R object, so we can load it again when we are ready to analyze.
+
+```{r}
+save(mta,file="mta_by_station_tidied.Rdata")
+```
