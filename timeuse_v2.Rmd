@@ -1,0 +1,269 @@
+# Time Use by Country Survey - Tidying and Analyzing the Data
+
+# *Edited* version of previous Rpubs!
+
+## Data 607 - project 2 
+### Heather Geiger;March 12, 2018
+
+## About this data
+
+This data was uploaded by Nicholas Schettini in my Data 607 class in the CUNY Master’s of Data Science program.
+
+I have also put the raw data into my Github, available here:
+
+https://raw.githubusercontent.com/heathergeiger/Data607_project2/master/TimeUse.csv
+
+Nicholas gave the following description for the data:
+
+"I found this dataset on time use by gender and by country.  Some of the variables include eating, sleeping, employment, travel, school, study, walking the dog, etc.  It seems you could analyze how males vs. females spend their time, and how each countries males and females compare to each other.  Maybe certain countries spend more time doing something more than another country; same goes for gender. "
+
+## Loading libraries and reading in data
+
+Load libraries.
+
+```{r}
+library(tidyr)
+library(stringr)
+library(dplyr)
+library(ggplot2)
+```
+
+Read in data.
+
+```{r}
+timeuse <- read.csv("TimeUse.csv",header=TRUE,skipNul = TRUE,check.names=FALSE,stringsAsFactors=FALSE)
+```
+
+## Look at the data and run transformations.
+
+Take a look at the file.
+
+There are a lot of columns, so we'll display just the first 10 along with just the column names for all.
+
+```{r, echo=TRUE,eval=FALSE}
+dim(timeuse)
+head(timeuse[,1:10])
+colnames(timeuse)
+```
+
+```{r, echo=FALSE,eval=TRUE}
+dim(timeuse)
+options(width=150)
+head(timeuse[,1:5])
+head(timeuse[,6:7])
+col8 <- data.frame(Col8 = timeuse[,8],stringsAsFactors=FALSE)
+colnames(col8) <- colnames(timeuse)[8]
+head(col8)
+head(timeuse[,9:10])
+colnames(timeuse)
+```
+
+In v1 of this script, I did not realize at first which the umbrella categories were.
+
+I realize now that "Personal care" is a superset of "Sleep", "Eating", and "Other and/or unspecified personal care".
+
+"Employment, related activities and travel as part of/during main and second job" is a superset of "Main and second job and related travel" and "Activities related to employment and unspecified employment".
+
+"Study" is a superset of "School and university except homework", "Homework", and "Free time study".
+
+"Household and family care" is a superset of activities from "Food management except dish washing" to "Household management and help family member".
+
+"Leisure, social and associative life" is a superset of "Organisational work" to "Unspecified leisure".
+
+"Travel except travel related to jobs" is a superset of "Travel to/from work" to "Unspecified travel".
+
+Finally, there is an "Other" type category called "Unspecified time use".
+
+Let's make a table of which umbrella category each sub-category fits under.
+
+```{r}
+umbrella_per_sub_category <- data.frame(Individual.activity = colnames(timeuse)[c(5:7,9:10,12:14,16:31,33:49,51:57,58)],
+Umbrella = rep(c("Personal care",
+"Employment, related activities and travel as part of/during main and second job",
+"Study",
+"Household and family care",
+"Leisure, social and associative life",
+"Travel except travel related to jobs",
+"Unspecified time use"),
+times=c(3,2,3,length(16:31),length(33:49),length(51:57),1)),
+stringsAsFactors=FALSE)
+```
+
+For the remainder of this analysis, we'll focus only on umbrella categories.
+
+However, we save the data from non-umbrella category activities in a different object, which we could transform and analyze in a similar way if we wanted to.
+
+For this purpose, "Unspecified Time use" is included for both umbrella and non-umbrella.
+
+```{r}
+umbrella_categories <- colnames(timeuse)[colnames(timeuse) %in% umbrella_per_sub_category$Umbrella]
+non_umbrella_categories <- colnames(timeuse)[colnames(timeuse) %in% umbrella_per_sub_category$Individual.activity]
+
+timeuse_umbrella <- timeuse %>% select(c("SEX","GEO/ACL00","Total",umbrella_categories))
+
+timeuse_non_umbrella <- timeuse %>% select(c("SEX","GEO/ACL00","Total",non_umbrella_categories))
+
+timeuse <- timeuse_umbrella
+```
+
+What countries are included in this data set?
+
+```{r}
+unique(timeuse[,"GEO/ACL00"])
+```
+
+I'm assuming "Total" column will be the same for all countries, but let's check.
+
+If so, remove this column.
+
+Also rename "GEO/ACL00" to "Country" and "SEX" to "Sex".
+
+```{r}
+table(timeuse$Total)
+
+timeuse <- timeuse[,setdiff(colnames(timeuse),"Total")]
+
+colnames(timeuse)[1:2] <- c("Sex","Country")
+```
+
+Convert from wide to long format.
+
+```{r}
+dim(timeuse)
+timeuse <- gather(timeuse,Activity,Time,-Sex,-Country)
+dim(timeuse)
+
+head(timeuse)
+```
+
+Write a function to convert the HH:MM notation to number of minutes.
+
+```{r}
+hours_and_minutes_to_minutes <- function(time){
+	time_split <- strsplit(time,":")[[1]]
+	hours <- as.numeric(time_split[1])
+	minutes <- as.numeric(time_split[2])
+	return((hours * 60) + minutes)
+}
+```
+
+Run this function on Time column.
+
+```{r}
+timeuse <- data.frame(timeuse,
+	Time.in.minutes = unlist(lapply(timeuse$Time,FUN=hours_and_minutes_to_minutes)),
+	stringsAsFactors=FALSE)
+
+head(timeuse)
+tail(timeuse)
+```
+
+Let's make sure time adds up to 24 hours for all countries and genders.
+
+```{r}
+24*60
+aggregate(Time.in.minutes ~ Country + Sex,FUN=sum,data=timeuse)
+```
+
+Yes, they do, minus a few minutes difference at most probably due to rounding errors.
+
+Let's change some of the category names to something shorter.
+
+```{r}
+timeuse$Activity <- plyr::mapvalues(timeuse$Activity,
+	from = c("Employment, related activities and travel as part of/during main and second job",
+		"Leisure, social and associative life",
+		"Travel except travel related to jobs"),
+	to = c("Employment",
+		"Leisure and social",
+		"Travel, non-job-related"))
+```
+
+Take a look at the data. Let's pick a random country and look at lines for all males and females.
+
+```{r}
+set.seed(1392)
+
+test_country <- sample(unique(timeuse$Country),1)
+
+timeuse %>% filter(Country == test_country & Sex == "Females")
+timeuse %>% filter(Country == test_country & Sex == "Males")
+```
+
+## Analysis
+
+Run some minor clean-up of the country names (to make them shorter where needed).
+
+Then, make a panel plot with time use by country and gender.
+
+```{r}
+timeuse$Country <- plyr::mapvalues(timeuse$Country,
+	from = c("Germany (including  former GDR from 1991)","United Kingdom"),
+	to = c("Germany","UK"))
+```
+
+```{r}
+ggplot(timeuse,
+aes(Country,Time.in.minutes,fill=Sex)) +
+geom_bar(stat="identity",position = "dodge") +
+facet_wrap(~Activity,scales="free_y") +
+theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+Time spent on unspecified is less than 10-15 minutes. Let's plot minus that.
+
+```{r}
+ggplot(timeuse[!(timeuse$Activity %in% "Unspecified time use"),],
+aes(Country,Time.in.minutes,fill=Sex)) +
+geom_bar(stat="identity",position = "dodge") +
+facet_wrap(~Activity,scales="free_y") +
+theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+We see dramatic gender differences in time spent on employment (much higher for men across all countries) and household and family care (much higher for women across all countries).
+
+Are there any major differences across countries?
+
+Let's compare countries now, separated by gender.
+
+Let's also remove "study" this time, as again there is very little time allocated to this category across countries.
+
+```{r}
+
+mycol <- c("#004949","#009292","#FF6DB6","#FFB677","#490092","#006DDB","#B66DFF","#6DB6FF","#B6DBFF","#920000","#924900","#DBD100","#24FF24","#FFFF6D","#000000") #Set up colorblind friendly vector. 
+
+for(activity in setdiff(unique(timeuse$Activity),c("Unspecified time use","Study")))
+{
+print(ggplot(timeuse %>% filter(Activity == activity),
+aes(Country,Time.in.minutes,fill=Country)) +
+geom_bar(stat="identity") +
+facet_wrap(~Sex,scales="free_y") +
+theme(axis.title.x=element_blank(),axis.text.x=element_blank(),axis.ticks.x=element_blank()) +
+scale_fill_manual(values = mycol) + 
+ggtitle(activity))
+}
+```
+
+```{r, echo=FALSE,eval=FALSE}
+ggplot(timeuse[!(timeuse$Activity %in% c("Unspecified time use","Study")),] %>% filter(Sex == "Females"),
+aes(Country,Time.in.minutes,fill=Country)) +
+geom_bar(stat="identity") +
+facet_wrap(~Activity,scales="free_y") +
+theme(axis.title.x=element_blank(),axis.text.x=element_blank(),axis.ticks.x=element_blank()) +
+scale_fill_manual(values = mycol) +
+ggtitle("Females only")
+
+ggplot(timeuse[!(timeuse$Activity %in% c("Unspecified time use","Study")),] %>% filter(Sex == "Males"),
+aes(Country,Time.in.minutes,fill=Country)) +
+geom_bar(stat="identity") +
+facet_wrap(~Activity,scales="free_y") +
+theme(axis.title.x=element_blank(),axis.text.x=element_blank(),axis.ticks.x=element_blank()) +
+scale_fill_manual(values = mycol) +
+ggtitle("Males only")
+```
+
+We definitely see some country-related differences in time spent on employment, with both males and females in Latvia and Lithuania (and a bit Estonia, though more so for females) spending more time on this activity.
+
+Belgium, Finland, Germany, and Norway seem to spend more time on leisure, with differences especially dramatic for females.
+
+We also start to see an interaction between country and gender in these plots. For example, Italian females spend the most time on household and family care compared to females across countries. Meanwhile Italian males have the lowest amounts of time spent on household and family care compared to males in other countries.
